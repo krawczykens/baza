@@ -1,0 +1,2 @@
+SUPABASE_URL = "https://twoje-id.supabase.co"
+SUPABASE_KEY = "twój-klucz-anon-public"
