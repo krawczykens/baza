@@ -4,7 +4,7 @@ import plotly.express as px
 from supabase import create_client, Client
 
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="System Magazynowy Pro", layout="wide", page_icon="📦")
+st.set_page_config(page_title="Magazyn Pro v4.0", layout="wide", page_icon="📦")
 
 # --- POŁĄCZENIE Z SUPABASE ---
 @st.cache_resource
@@ -14,172 +14,186 @@ def init_connection():
         key = st.secrets["SUPABASE_KEY"]
         return create_client(url, key)
     except Exception as e:
-        st.error("Błąd konfiguracji Secrets! Sprawdź ustawienia na Streamlit Cloud.")
+        st.error("Błąd konfiguracji! Upewnij się, że w Secrets masz SUPABASE_URL i SUPABASE_KEY.")
         st.stop()
 
 supabase = init_connection()
 
 # --- FUNKCJE POBIERANIA DANYCH ---
 def get_products():
-    # Zgodnie z Twoim obrazkiem: tabela 'Produkty' (duża litera)
+    # Pobieramy produkty wraz z nazwą kategorii
     res = supabase.table("Produkty").select("id, nazwa, liczba, cena, kategoria_id, kategorie(nazwa)").execute()
     df = pd.DataFrame(res.data)
     if not df.empty:
-        # Wyciąganie nazwy kategorii z relacji
         df['kategoria'] = df['kategorie'].apply(lambda x: x['nazwa'] if isinstance(x, dict) else 'Brak')
-        # Obliczanie wartości (cena * liczba)
         df['wartość_razem'] = df['cena'] * df['liczba']
-        # Konwersja ID na int, aby uniknąć problemów z typami NumPy
+        # Naprawa typów dla JSON:
         df['id'] = df['id'].astype(int)
+        df['liczba'] = df['liczba'].astype(int)
     return df
 
 def get_categories():
-    # Zgodnie z Twoim obrazkiem: tabela 'kategorie' (mała litera)
     res = supabase.table("kategorie").select("*").execute()
     df = pd.DataFrame(res.data)
     if not df.empty:
         df['id'] = df['id'].astype(int)
     return df
 
-# --- MENU BOCZNE ---
-st.sidebar.title("🏢 Zarządzanie")
-page = st.sidebar.radio("Nawigacja:", ["📊 Dashboard", "➕ Dodaj Nowe", "✏️ Edytuj Dane", "🗑️ Usuń Dane"])
+# --- SIDEBAR - NAWIGACJA ---
+st.sidebar.title("🏢 System Magazynowy")
+page = st.sidebar.radio("Nawigacja:", [
+    "📊 Dashboard", 
+    "➕ Dodaj Nowe", 
+    "✏️ Edytuj Dane", 
+    "🗑️ Usuń Dane", 
+    "🛡️ Weryfikacja Zapasów"
+])
 
 # --- 1. DASHBOARD ---
 if page == "📊 Dashboard":
-    st.title("📊 Podsumowanie Magazynu")
+    st.title("📊 Statystyki Magazynowe")
     df_p = get_products()
-    df_k = get_categories()
-
+    
     if df_p.empty:
-        st.info("Baza jest pusta. Dodaj produkty w zakładce 'Dodaj Nowe'.")
+        st.info("Dodaj pierwsze produkty, aby zobaczyć statystyki.")
     else:
         # Metryki
-        total_val = df_p['wartość_razem'].sum()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Wartość magazynu", f"{total_val:,.2f} zł")
-        col2.metric("Liczba sztuk", int(df_p['liczba'].sum()))
-        col3.metric("Liczba pozycji", len(df_p))
-
+        val = df_p['wartość_razem'].sum()
+        szt = df_p['liczba'].sum()
+        low_stock = len(df_p[df_p['liczba'] < 5])
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Wartość Magazynu", f"{val:,.2f} zł")
+        c2.metric("Suma Wszystkich Sztuk", f"{int(szt)}")
+        c3.metric("Niskie Stany (<5 szt.)", low_stock, delta_color="inverse")
+        
         st.divider()
-
-        # Wykresy
-        c_left, c_right = st.columns(2)
-        with c_left:
-            fig_pie = px.pie(df_p, values='wartość_razem', names='kategoria', title="Podział wartości wg kategorii")
+        
+        col_l, col_r = st.columns(2)
+        with col_l:
+            fig_pie = px.pie(df_p, values='wartość_razem', names='kategoria', title="Udział kategorii w wartości")
             st.plotly_chart(fig_pie, use_container_width=True)
-        with c_right:
-            top_df = df_p.sort_values('wartość_razem', ascending=False).head(10)
-            fig_bar = px.bar(top_df, x='wartość_razem', y='nazwa', orientation='h', title="Top 10 najdroższych pozycji")
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        st.subheader("📦 Wszystkie Produkty")
-        st.dataframe(df_p[['id', 'nazwa', 'kategoria', 'liczba', 'cena', 'wartość_razem']], use_container_width=True, hide_index=True)
+        with col_r:
+            st.subheader("📦 Podgląd Tabeli")
+            st.dataframe(df_p[['nazwa', 'kategoria', 'liczba', 'cena']], use_container_width=True, hide_index=True)
 
 # --- 2. DODAWANIE ---
 elif page == "➕ Dodaj Nowe":
-    st.title("➕ Dodawanie danych")
-    t1, t2 = st.tabs(["Produkt", "Kategoria"])
-
+    st.title("➕ Dodaj Zasoby")
+    t1, t2 = st.tabs(["Nowy Produkt", "Nowa Kategoria"])
+    
     with t2:
-        with st.form("form_add_k"):
-            kn = st.text_input("Nazwa nowej kategorii")
-            ko = st.text_area("Opis kategorii")
-            if st.form_submit_button("Dodaj kategorię"):
+        with st.form("add_k"):
+            kn = st.text_input("Nazwa kategorii")
+            ko = st.text_area("Opis")
+            if st.form_submit_button("Zapisz kategorię"):
                 if kn:
                     supabase.table("kategorie").insert({"nazwa": kn, "opis": ko}).execute()
-                    st.success("Dodano!")
+                    st.success(f"Dodano kategorię: {kn}")
                     st.rerun()
 
     with t1:
         df_k = get_categories()
         if df_k.empty:
-            st.warning("Najpierw musisz dodać kategorię!")
+            st.warning("Najpierw dodaj kategorię w zakładce obok!")
         else:
             cat_map = dict(zip(df_k['nazwa'], df_k['id']))
-            with st.form("form_add_p"):
+            with st.form("add_p"):
                 pn = st.text_input("Nazwa produktu")
-                pc = st.number_input("Cena", min_value=0.0, step=0.01)
-                pl = st.number_input("Ilość", min_value=0, step=1)
+                pc = st.number_input("Cena (zł)", min_value=0.0)
+                pl = st.number_input("Ilość (szt)", min_value=0)
                 pk = st.selectbox("Kategoria", options=list(cat_map.keys()))
                 if st.form_submit_button("Zapisz produkt"):
-                    payload = {
-                        "nazwa": pn, 
-                        "cena": float(pc), 
-                        "liczba": int(pl), 
-                        "kategoria_id": int(cat_map[pk])
-                    }
-                    supabase.table("Produkty").insert(payload).execute()
-                    st.success("Produkt dodany!")
-                    st.rerun()
+                    if pn:
+                        # Rzutowanie na natywne typy Pythona (int/float)
+                        payload = {"nazwa": pn, "cena": float(pc), "liczba": int(pl), "kategoria_id": int(cat_map[pk])}
+                        supabase.table("Produkty").insert(payload).execute()
+                        st.success("Produkt dodany!")
+                        st.rerun()
 
-# --- 3. EDYCJA (Z POPRAWKĄ BŁĘDU TYPÓW) ---
+# --- 3. EDYCJA ---
 elif page == "✏️ Edytuj Dane":
-    st.title("✏️ Edycja rekordów")
+    st.title("✏️ Edycja")
     df_p = get_products()
     df_k = get_categories()
-
+    
     if not df_p.empty:
-        # Wybór produktu (używamy słownika, by łatwo dobrać dane)
         prod_labels = {f"{r['nazwa']} (ID: {r['id']})": r for _, r in df_p.iterrows()}
-        selected_prod = st.selectbox("Wybierz produkt", options=list(prod_labels.keys()))
-        curr = prod_labels[selected_prod]
-
-        with st.form("form_edit_p"):
-            en = st.text_input("Nowa nazwa", value=curr['nazwa'])
-            ec = st.number_input("Nowa cena", value=float(curr['cena']), step=0.01)
-            el = st.number_input("Nowa ilość", value=int(curr['liczba']), step=1)
+        selected_label = st.selectbox("Wybierz produkt", options=list(prod_labels.keys()))
+        curr = prod_labels[selected_label]
+        
+        with st.form("edit_f"):
+            en = st.text_input("Nazwa", value=curr['nazwa'])
+            ec = st.number_input("Cena", value=float(curr['cena']))
+            el = st.number_input("Ilość", value=int(curr['liczba']))
             
             # Kategoria
             kat_list = df_k['nazwa'].tolist()
-            curr_kat_idx = kat_list.index(curr['kategoria']) if curr['kategoria'] in kat_list else 0
-            ek = st.selectbox("Zmień kategorię", options=kat_list, index=curr_kat_idx)
+            curr_idx = kat_list.index(curr['kategoria']) if curr['kategoria'] in kat_list else 0
+            ek = st.selectbox("Kategoria", options=kat_list, index=curr_idx)
             
             if st.form_submit_button("Zatwierdź zmiany"):
-                # KLUCZOWE: Rzutowanie na typy Pythonowe przed wysłaniem JSON
                 new_cat_id = int(df_k[df_k['nazwa'] == ek]['id'].iloc[0])
-                target_id = int(curr['id'])
-                
-                upd_payload = {
-                    "nazwa": en,
-                    "cena": float(ec),
-                    "liczba": int(el),
-                    "kategoria_id": new_cat_id
-                }
-                
-                try:
-                    supabase.table("Produkty").update(upd_payload).eq("id", target_id).execute()
-                    st.success("Dane zaktualizowane!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Błąd bazy: {e}")
+                payload = {"nazwa": en, "cena": float(ec), "liczba": int(el), "kategoria_id": new_cat_id}
+                supabase.table("Produkty").update(payload).eq("id", int(curr['id'])).execute()
+                st.success("Zaktualizowano!")
+                st.rerun()
     else:
-        st.info("Brak danych do edycji.")
+        st.info("Brak danych.")
 
 # --- 4. USUWANIE ---
 elif page == "🗑️ Usuń Dane":
     st.title("🗑️ Usuwanie")
-    col_a, col_b = st.columns(2)
+    col1, col2 = st.columns(2)
     
-    with col_a:
-        st.subheader("Usuń produkt")
+    with col1:
+        st.subheader("Usuń Produkt")
         df_p = get_products()
         if not df_p.empty:
-            p_del = st.selectbox("Wybierz produkt", options=df_p.apply(lambda x: f"{x['nazwa']} | ID:{x['id']}", axis=1))
-            id_p_del = int(p_del.split("ID:")[1])
+            p_to_del = st.selectbox("Wybierz produkt", options=df_p.apply(lambda x: f"{x['nazwa']} | ID:{x['id']}", axis=1))
             if st.button("❌ Usuń produkt", type="primary"):
-                supabase.table("Produkty").delete().eq("id", id_p_del).execute()
+                id_p = int(p_to_del.split("ID:")[1])
+                supabase.table("Produkty").delete().eq("id", id_p).execute()
                 st.rerun()
 
-    with col_b:
-        st.subheader("Usuń kategorię")
+    with col2:
+        st.subheader("Usuń Kategorię")
         df_k = get_categories()
         if not df_k.empty:
-            k_del = st.selectbox("Wybierz kategorię", options=df_k.apply(lambda x: f"{x['nazwa']} | ID:{x['id']}", axis=1))
-            id_k_del = int(k_del.split("ID:")[1])
+            k_to_del = st.selectbox("Wybierz kategorię", options=df_k.apply(lambda x: f"{x['nazwa']} | ID:{x['id']}", axis=1))
             if st.button("🗑️ Usuń kategorię"):
+                id_k = int(k_to_del.split("ID:")[1])
                 try:
-                    supabase.table("kategorie").delete().eq("id", id_k_del).execute()
+                    supabase.table("kategorie").delete().eq("id", id_k).execute()
                     st.rerun()
                 except:
-                    st.error("Nie można usunąć kategorii, w której są produkty!")
+                    st.error("Kategoria nie jest pusta!")
+
+# --- 5. WERYFIKACJA ZAPASÓW ---
+elif page == "🛡️ Weryfikacja Zapasów":
+    st.title("🛡️ Kontrola Stanów")
+    df_p = get_products()
+    
+    safe_level = st.slider("Minimalna bezpieczna ilość sztuk:", 0, 50, 10)
+    
+    if not df_p.empty:
+        # Klasyfikacja stanów
+        def check_status(row):
+            if row['liczba'] == 0: return "🔴 Brak"
+            if row['liczba'] < safe_level: return "🟡 Niski"
+            return "🟢 OK"
+        
+        df_p['Status'] = df_p.apply(check_status, axis=1)
+        
+        critical = df_p[df_p['liczba'] < safe_level].sort_values('liczba')
+        
+        if not critical.empty:
+            st.warning(f"Znaleziono {len(critical)} pozycji wymagających uzupełnienia!")
+            st.dataframe(critical[['nazwa', 'liczba', 'kategoria', 'Status']], use_container_width=True, hide_index=True)
+            
+            fig = px.bar(critical, x='nazwa', y='liczba', color='Status', 
+                         title="Produkty poniżej progu bezpieczeństwa",
+                         color_discrete_map={"🔴 Brak": "red", "🟡 Niski": "orange"})
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.success("Wszystkie stany magazynowe są w normie! ✅")
